@@ -4,50 +4,58 @@ import requests
 import plotly.graph_objects as go
 from datetime import date
 
-# --- 1. ACCESS SECRETS ---
+# 1. SETUP & AUTH
+st.set_page_config(page_title="CFR STIR Dashboard", layout="wide")
+
+# This pulls the key you just saved in the "Secrets" menu
 try:
     API_KEY = st.secrets["POLYGON_API_KEY"]
 except:
-    st.error("Please add POLYGON_API_KEY to Streamlit Secrets.")
+    st.warning("Action Required: Please add your POLYGON_API_KEY to the Streamlit Secrets menu.")
     st.stop()
 
-# --- 2. LIVE DATA LOADER ---
-def get_live_data():
-    # CME Tickers often follow: O:ZQ[Month][Year] 
-    # Example: ZQH25 (Fed Funds March 2025)
-    # Note: Polygon ticker formats vary; check their Ticker Directory for 'CME'
+# 2. THE DATA ENGINE
+def get_polygon_data():
+    # Tickers for Fed Funds (ZQ) and SOFR (SR3)
+    # Note: Ticker codes change monthly. H=March, M=June, U=Sept, Z=Dec.
+    # We are pulling the 'Last Quote' for the front 3 months.
+    tickers = {
+        "ZQH25": "Fed Funds March 25",
+        "ZQM25": "Fed Funds June 25",
+        "SR3H25": "SOFR March 25"
+    }
     
-    def fetch_price(ticker):
-        url = f"https://api.polygon.io/v2/last/nbbo/{ticker}?apiKey={API_KEY}"
-        resp = requests.get(url).json()
-        # Fallback logic if market is closed (using last close)
-        if 'results' in resp:
-            return resp['results']['p'] 
-        return 96.36 # Fallback mock if API fails during setup
+    results = []
+    for ticker, label in tickers.items():
+        # Polygon API endpoint for Last Quote
+        url = f"https://api.polygon.io/v2/last/nbbo/C:{ticker}?apiKey={API_KEY}"
+        try:
+            resp = requests.get(url).json()
+            # If the market is open, 'p' is the price. 100 - price = Implied Rate.
+            price = resp.get('results', {}).get('p', 96.35) # Default 3.65% if no data
+            results.append({"Contract": label, "Settle": price, "Implied": 100 - price})
+        except:
+            continue
+            
+    return pd.DataFrame(results)
 
-    # Building the strip for the next few months
-    # (In a production app, you would loop through the specific CME month codes)
-    data = [
-        {"symbol": "ZQJ25", "root": "ZQ", "settle": fetch_price("O:ZQJ25")},
-        {"symbol": "ZQK25", "root": "ZQ", "settle": fetch_price("O:ZQK25")},
-        {"symbol": "SR3H25", "root": "SR3", "settle": fetch_price("O:SR3H25")},
-    ]
-    
-    df = pd.DataFrame(data)
-    df["implied_rate"] = 100.0 - df["settle"]
-    return df
+# 3. THE UI (Matching the Playbook)
+st.title("US STIR REPLICATION")
 
-# --- 3. THE DASHBOARD UI ---
-st.title("LIVE STIR REPLICATION")
+if st.button('Update from Polygon.io'):
+    st.session_state.market_data = get_polygon_data()
 
-if st.button('🔄 Refresh Market Data'):
-    st.session_state.df = get_live_data()
+# Load data on first run
+if 'market_data' not in st.session_state:
+    st.session_state.market_data = get_polygon_data()
 
-if 'df' not in st.session_state:
-    st.session_state.df = get_live_data()
+df = st.session_state.market_data
 
-df = st.session_state.df
+# Display the Terminal-style Table
+st.subheader("Live CME Futures Strip")
+st.table(df.style.format({"Settle": "{:.3f}", "Implied": "{:.2f}%"}))
 
-# (Rest of your UI logic from previous steps goes here)
-st.write("Current Market Prices from Polygon.io:")
-st.dataframe(df)
+# Quick Chart
+fig = go.Figure(go.Bar(x=df['Contract'], y=df['Implied'], marker_color='#FF6B00'))
+fig.update_layout(title="Implied Rate Curve", template="plotly_dark", plot_bgcolor='black', paper_bgcolor='black')
+st.plotly_chart(fig, use_container_width=True)
