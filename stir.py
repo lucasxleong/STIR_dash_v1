@@ -24,12 +24,12 @@ class Contract:
 
 # --- 2. DATA LOADERS (Modified for Streamlit + Real 2026 Dates) ---
 def get_fomc_dates():
-    # Hard-coded FOMC dates for 2025-2026 as per Playbook recommendation
+    # Hard-coded FOMC dates for 2025-2026
     return [
         date(2025, 1, 29), date(2025, 3, 19), date(2025, 5, 7), date(2025, 6, 18),
         date(2025, 7, 30), date(2025, 9, 17), date(2025, 10, 29), date(2025, 12, 10),
         date(2026, 1, 28), date(2026, 3, 18), date(2026, 4, 29), date(2026, 6, 17),
-        date(2026, 7, 29), date(2026, 16, 16), date(2026, 10, 28), date(2026, 12, 9)
+        date(2026, 7, 29), date(2026, 9, 16), date(2026, 10, 28), date(2026, 12, 9)
     ]
 
 def load_mock_data():
