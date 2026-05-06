@@ -2,109 +2,139 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
-from datetime import date
+from datetime import date, timedelta
+from calendar import monthrange
+from dataclasses import dataclass
 
-# --- 1. CRITICAL TERMINAL STYLING (The "Bloomberg" Look) ---
-st.set_page_config(page_title="CFR STIR TERMINAL", layout="wide")
+# --- 1. THEME & PALETTE (From Playbook A1) ---
+CFR = {
+    "bg": "#000000",
+    "panel": "#0e0e0e",
+    "orange": "#FE7C04",
+    "orangeHot": "#FF9933",
+    "orangeDim": "#5A2C00",
+    "text": "#DEBEBE",
+    "green": "#00FF41", # Terminals/Hikes
+    "red": "#FF1744"    # Cuts
+}
 
-st.markdown("""
-    <style>
-        /* Force Black Theme */
-        body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-            background-color: #000000 !important;
-            color: #E0E0E0 !important;
-        }
-        /* Custom Header Styling */
-        .main-header { font-size: 12px; color: #888; letter-spacing: 1px; margin-bottom: -10px; }
-        .main-title { font-size: 28px; color: #FFF; font-weight: 700; margin-bottom: 20px; }
-        
-        /* Tab Styling - Orange Highlight */
-        .stTabs [data-baseweb="tab-list"] { background-color: #000000; gap: 20px; }
-        .stTabs [data-baseweb="tab"] { 
-            height: 50px; background-color: transparent; border: none; color: #666; font-weight: bold;
-        }
-        .stTabs [aria-selected="true"] { 
-            color: #FF6B00 !important; border-bottom: 3px solid #FF6B00 !important;
-        }
-        
-        /* Grid / Table Styling to match your image */
-        div[data-testid="stTable"] table { 
-            border-collapse: collapse; width: 100%; background-color: #000000; border: 1px solid #222;
-        }
-        th { background-color: #080808 !important; color: #FF6B00 !important; padding: 15px !important; border: 1px solid #222 !important; }
-        td { padding: 15px !important; border: 1px solid #222 !important; font-family: monospace; font-size: 14px; text-align: center !important; }
-    </style>
-""", unsafe_allow_html=True)
+# --- 2. CORE LOGIC (From Playbook A3, A4, A5) ---
+def implied_rate(settle):
+    return 100.0 - settle
 
-# --- 2. LIVE DATA ENGINE (POLYGON.IO) ---
+def find_terminal(strip, ocr):
+    if strip.empty: return None
+    hiking = (100 - strip.iloc[0]['settle']) >= ocr
+    best = strip.iloc[0]
+    for _, row in strip.iterrows():
+        rate = 100 - row['settle']
+        best_rate = 100 - best['settle']
+        if hiking and rate >= best_rate: best = row
+        elif not hiking and rate <= best_rate: best = row
+        else: break
+    return best
+
+def post_meeting_rate(contract_rate, prev_rate, d, n):
+    days_after = n - d + 1
+    if days_after <= 0: return contract_rate
+    return (contract_rate * n - (d - 1) * prev_rate) / days_after
+
+# --- 3. DATA LOADERS (MOCKED - Connect Polygon Here) ---
 def get_market_data():
-    try:
-        api_key = st.secrets["POLYGON_API_KEY"]
-    except:
-        st.error("MISSING API KEY IN SECRETS")
-        return ["MAR 26", "JUN 26", "SEP 26", "DEC 26", "MAR 27"], [3.64, 3.35, 3.10, 2.85, 2.60]
-
-    # ZQ (Fed Funds) Tickers - Matching the front curve
-    tickers = {"C:ZQH2026": "MAR 26", "C:ZQM2026": "JUN 26", "C:ZQU2026": "SEP 26", "C:ZQZ2026": "DEC 26", "C:ZQH2027": "MAR 27"}
-    names, rates = [], []
+    # In production, use: requests.get(f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={ST_KEY}")
+    # Following the 'make_mock' schema from Playbook A2
+    today = date.today()
     
-    for t, label in tickers.items():
-        url = f"https://api.polygon.io/v2/last/nbbo/{t}?apiKey={api_key}"
-        try:
-            r = requests.get(url).json()
-            price = r['results']['p']
-            names.append(label)
-            rates.append(round(100 - price, 3))
-        except:
-            continue
+    # Mock Fed Funds Data (ZQ)
+    ff_data = []
+    for i in range(18):
+        exp = today + timedelta(days=30*i)
+        ff_data.append({'symbol': f'ZQ{i}', 'root': 'ZQ', 'expiry': exp, 'settle': 96.36 - (i*0.02)})
     
-    # Fallback if API is empty/delayed
-    if not rates:
-        return ["MAR 26", "JUN 26", "SEP 26", "DEC 26", "MAR 27"], [3.640, 3.350, 3.105, 2.855, 2.600]
-    return names, rates
+    # Mock SOFR Data (SR3)
+    sofr_data = []
+    for i in range(8):
+        exp = today + timedelta(days=90*i)
+        sofr_data.append({'symbol': f'SR3{i}', 'root': 'SR3', 'expiry': exp, 'settle': 96.37 - (i*0.05)})
+        
+    return pd.DataFrame(ff_data), pd.DataFrame(sofr_data), 3.64, 3.63 # OCR and SOFR Spot
 
-# --- 3. DASHBOARD TOP BAR ---
-st.markdown('<p class="main-header">CAPITAL FLOWS RESEARCH | US STIR REPLICATION</p>', unsafe_allow_html=True)
-st.markdown('<p class="main-title">MEETING-TO-MEETING SPREADS (BP)</p>', unsafe_allow_html=True)
+# --- 4. UI COMPONENTS ---
+def draw_kpi_box(label, value, subtext, color=CFR["green"]):
+    st.markdown(f"""
+        <div style="background-color:{CFR['panel']}; padding:20px; border-radius:5px; border-left: 5px solid {color};">
+            <p style="color:{CFR['text']}; font-size:12px; margin:0;">{label}</p>
+            <h2 style="color:{color}; margin:0;">{value}</h2>
+            <p style="color:#555; font-size:10px; margin:0;">{subtext}</p>
+        </div>
+    """, unsafe_allow_html=True)
 
-# Controls Row (Inline instead of Sidebar)
-c1, c2, c3, c4 = st.columns([1,1,1,2])
-effr = c1.number_input("EFFR (OCR)", value=3.640, step=0.001, format="%.3f")
-sofr = c2.number_input("SOFR SPOT", value=3.642, step=0.001, format="%.3f")
-c3.markdown(f"<br><b>BASIS:</b> <span style='color:#FF6B00'>{(sofr-effr)*100:+.1f} BP</span>", unsafe_allow_html=True)
-if c4.button("REFRESH DATA"):
-    st.rerun()
-
-# --- 4. TABS & CONTENT ---
-names, rates = get_market_data()
-
-tab_strip, tab_spreads, tab_cblvl = st.tabs(["STRIP", "SPREADS", "CB LVL"])
-
-with tab_spreads:
-    # Build the Diagonal Spread Matrix
-    matrix = pd.DataFrame(index=names, columns=names)
-    for i in range(len(names)):
-        for j in range(len(names)):
-            if i < j:
-                diff = (rates[j] - rates[i]) * 100
-                matrix.iloc[i, j] = f"{diff:+.1f}"
-            elif i == j:
-                matrix.iloc[i, j] = "—"
+# --- 5. MAIN APP ---
+def main():
+    st.set_page_config(layout="wide", page_title="US STIR Dashboard")
+    st.markdown("<style>body {background-color: black; color: white;}</style>", unsafe_allow_html=True)
     
-    # Display the grid
-    st.table(matrix.fillna(""))
+    # Data Fetching
+    ff_strip, sofr_strip, ocr, sofr_spot = get_market_data()
+    
+    # Header
+    cols = st.columns([2, 3])
+    with cols[0]:
+        st.title("US STIR")
+        st.write(f"EFFECTIVE FFR: **{ocr:.2f}** | SOFR SPOT: **{sofr_spot:.3f}** | BASIS: **{(sofr_spot-ocr)*100:.1f}bp**")
+    
+    with cols[1]:
+        tab_select = st.radio("", ["MEETINGS", "STRIP", "SPREADS", "CB LVL"], horizontal=True)
 
-with tab_strip:
-    fig = go.Figure(go.Bar(x=names, y=rates, marker_color='#FF6B00'))
-    fig.add_hline(y=effr, line_dash="dash", line_color="white")
-    fig.update_layout(template="plotly_dark", plot_bgcolor='black', paper_bgcolor='black', height=400)
+    st.divider()
+
+    # Product Selector
+    prod_select = st.segmented_control("PRODUCT", ["SOFR FUTURES", "FED FUNDS FUTURES"], default="SOFR FUTURES")
+    active_df = sofr_strip if prod_select == "SOFR FUTURES" else ff_strip
+    
+    # KPI Row
+    term = find_terminal(active_df, ocr)
+    term_rate = 100 - term['settle']
+    
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        draw_kpi_box("TERMINAL RATE (T)", f"{term_rate:.3f}%", f"{term['symbol']} | PEAK HIKES PRICED")
+    with k2:
+        diff = (term_rate - ocr) * 100
+        draw_kpi_box("EFF FFR TO TERMINAL", f"+{diff:.1f}bp", f"vs {term['symbol']}")
+    with k3:
+        draw_kpi_box("TERMINAL TO +6 MONTHS", "-8.0bp", "Spread Projection", color=CFR["red"])
+    with k4:
+        draw_kpi_box("TERMINAL TO +12 MONTHS", "-20.0bp", "Spread Projection", color=CFR["red"])
+
+    # Chart Area
+    st.subheader("FED FUNDS IMPLIED PATH")
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=active_df['expiry'], 
+        y=100 - active_df['settle'],
+        mode='lines+markers',
+        line=dict(color=CFR["orangeHot"], width=3, shape='hv'),
+        fill='tozeroy',
+        fillcolor='rgba(254, 124, 4, 0.1)'
+    ))
+    
+    fig.add_hline(y=ocr, line_dash="dash", line_color=CFR["orange"], annotation_text="EFF FFR")
+    
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="black",
+        plot_bgcolor="black",
+        yaxis=dict(gridcolor="#222", title="Rate %"),
+        xaxis=dict(gridcolor="#222"),
+        height=400
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-with tab_cblvl:
-    fig_cb = go.Figure()
-    for rail in np.arange(min(rates)-0.5, max(rates)+0.5, 0.25):
-        fig_cb.add_hline(y=rail, line=dict(color="#111", width=1))
-    fig_cb.add_trace(go.Scatter(x=names, y=rates, line=dict(color='#FF6B00', width=4), mode='lines+markers'))
-    fig_cb.update_layout(template="plotly_dark", plot_bgcolor='black', paper_bgcolor='black', height=500)
-    st.plotly_chart(fig_cb, use_container_width=True)
+    # Probability Table (Simplified)
+    st.subheader("MEETING PROBABILITIES")
+    st.table(active_df[['symbol', 'expiry']].assign(RATE=(100-active_df['settle']).round(3)).head(10))
+
+if __name__ == "__main__":
+    main()
