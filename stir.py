@@ -17,7 +17,7 @@ st.markdown("""
         .stTabs [aria-selected="true"] { background-color: #FF6B00 !important; }
         div[data-testid="stExpander"] { background-color: #080808; border: 1px solid #222; }
     </style>
-""", unsafe_content_type=True)
+""", unsafe_allow_html=True)
 
 # --- 2. CALCULATIONS FOR THE "SPREADS" MATRIX ---
 def get_spread_matrix(data):
